@@ -1,0 +1,65 @@
+config:
+#  http:
+#    enabled: true
+#    address: 0.0.0.0:4195
+#    root_path: /rp-connect
+#    debug_endpoints: true
+  redpanda:
+    seed_brokers: ["green-0.green.green.svc.cluster.local:9093"]
+
+  input:
+    kafka:
+      addresses: ["blue-0.blue.blue.svc.cluster.local:9093"]
+      topics: ["_schemas"]
+      target_version: 2.1.0
+      consumer_group: "replication-test-c"
+      checkpoint_limit: 1024
+#      auto_replay_nacks: true
+      batching:
+        byte_size: 1000000
+        count: 0
+        period: 10s
+  pipeline:
+    processors:
+      - mapping: |
+          if this.exists("mode") && this.keys().length().or(0) == 1 {
+            root = deleted()
+          }
+      - mapping: |
+          if metadata("replicated") == "true" {
+            root = deleted()
+          }
+      - mapping: |
+          if metadata("kafka_key").parse_json().keys().contains("seq") {
+            if metadata("kafka_key").parse_json().seq == metadata("kafka_offset") {
+              meta kafka_key = metadata("kafka_key").parse_json().without("node", "seq").string()
+            } else {
+              if this.length().or(0) == 0 {
+                meta kafka_key = metadata("kafka_key").parse_json().without("node", "seq").string()
+              } else {
+                root = deleted()
+                meta = deleted()
+              }
+            }
+          }
+      - mapping: |
+          meta replicated = true
+  output:
+    kafka_franz:
+      seed_brokers: ["green-0.green.green.svc.cluster.local:9093"]
+      key: ${! meta("kafka_key").not_null().catch("") }
+      topic: _schemas
+      partitioner: manual
+      partition: 0
+      client_id: rp-connect
+      idempotent_write: true
+      max_in_flight: 1
+      timeout: 10s
+      max_message_bytes: 1MB
+      compression: none
+      metadata:
+        include_patterns:
+          - replicated
+image:
+  repository: "docker.redpanda.com/redpandadata/connect"
+  tag: "4.34.0"
